@@ -13,8 +13,8 @@ const RENDER_TO_DOM = Symbol('render_to_dom');
 
 // 基类，所有的 类组件 都要继承
 export class Component {
-  constructor() {
-    this.props = Object.create(null);
+  constructor(props = null) {
+    this.props = Object.create(props);
     this.children = [];
     this._root = null;
     this._range = null;
