@@ -13,8 +13,8 @@ const RENDER_TO_DOM = Symbol('render_to_dom');
 
 // 基类，所有的 类组件 都要继承
 export class Component {
-  constructor(props = null) {
-    this.props = Object.create(props);
+  constructor() {
+    this.props = Object.create(null);
     this.children = [];
     this._root = null;
     this._range = null;
@@ -31,30 +31,80 @@ export class Component {
      * 会返回一个component或者一个dom
      * 递归去调用，知道调用到domWrapper上的 RENDER_TO_DOM 方法，渲染真实dom
      */
+    // 14:00
     this._range = range;
-    this.render()[RENDER_TO_DOM](range);
+    // 由于会更新，因此将更新前的旧有vdom储存下来
+    this._vdom = this.vdom;
+    this._vdom[RENDER_TO_DOM](range);
   }
-  /* get root() {
-    // 递归的去拿去root属性，如果是component会一直递归调用 get root()，直到返回的是一个dom
-    if (!this._root) {
-      this._root = this.render().root;
+  update() {
+    let isSameNode = (oldNode, newNode) => {
+      // 如果type不同则直接false
+      if (oldNode.type !== newNode.type) {
+        return false;
+      }
+      // 如果props有不同的则 false 其实不应该这样，应该patch比对
+      for (const name in newNode.props) {
+        if (newNode.props[name] !== oldNode.props[name]) {
+          return false;
+        }
+      }
+      // 如果新增了props，false
+      if (Object.keys(oldNode.props).length > Object.keys(newNode.props).length)
+        return false;
+      // 文本节点如果不对，则直接false
+      if (newNode.type === "#text") {
+        if (newNode.content !== oldNode.content) {
+          return false;
+        }
+      }
+
+      return true;
     }
-    return this._root;
-  } */
-  rerender() {
-    /**
-     * 在此处重绘时，在旧节点之前去重绘出新的dom
-     * 然后将旧有dom清空，这样会避免出现bug
-     */
-    let oldRange = this._range;
+    let update = (oldNode, newNode) => {
+      if (!isSameNode(oldNode, newNode)) {
+        newNode[RENDER_TO_DOM](oldNode._range);
+        return;
+      }
 
-    let range = document.createRange();
-    range.setStart(oldRange.startContainer, oldRange.startOffset);
-    range.setEnd(oldRange.startContainer, oldRange.startOffset);
-    this[RENDER_TO_DOM](range);
+      newNode._range = oldNode._range;
 
-    oldRange.setStart(range.endContainer, range.endOffset);
-    oldRange.deleteContents();
+      // 23:22
+      let newChildren = newNode.vchildren;
+      let oldChildren = oldNode.vchildren;
+
+      // 如果没有新的children，则直接return
+      if (!newChildren || !newChildren.length) {
+        return;
+      }
+
+      // 尾节点range
+      let tailRange = oldChildren[oldChildren.length - 1]._range;
+
+      for (let index = 0; index < newChildren.length; index++) {
+        const newChild = newChildren[index];
+        const oldChild = oldChildren[index];
+        // 如果index 小于 oldChildren.length
+        // 说明旧有dom比对
+        // 则递归的去调用
+        if (index < oldChildren.length) {
+          update(oldChild, newChild);
+        } else {
+          // TODO
+          let range = document.createRange();
+          range.setStart(tailRange.endContainer, tailRange.endOffset);
+          range.setEnd(tailRange.endContainer, tailRange.endOffset);
+          newChild[RENDER_TO_DOM](range);
+          tailRange = range;
+        }
+      }
+    }
+    // 将this.vdom储存，然后更新完后，储存为旧有_vdom
+    // 16:10
+    let vdom = this.vdom;
+    // 此处 不可用this.vdom，因为会有引用bug
+    update(this._vdom, vdom);
+    this._vdom = vdom;
   }
   setState(newState) {
     if (TypeOf(newState) != 'Object') {
@@ -73,17 +123,86 @@ export class Component {
       }
     }
     mergeState(this.state, newState);
-    this.rerender();
+    this.update();
   }
+  get vdom() {
+    // 递归调用，直到是一个ElementWrapper的vdom
+    return this.render().vdom;
+  }
+  /* get vchildren() {
+    return this.children.map(child => child.vdom);
+  } */
+  /* get root() {
+    // 递归的去拿去root属性，如果是component会一直递归调用 get root()，直到返回的是一个dom
+    if (!this._root) {
+      this._root = this.render().root;
+    }
+    return this._root;
+  }  
+  rerender() {
+    // 在此处重绘时，在旧节点之前去重绘出新的dom
+    // 然后将旧有dom清空，这样会避免出现bug
+    // let oldRange = this._range;
+
+    let range = document.createRange();
+    range.setStart(oldRange.startContainer, oldRange.startOffset);
+    range.setEnd(oldRange.startContainer, oldRange.startOffset);
+    this[RENDER_TO_DOM](range);
+
+    oldRange.setStart(range.endContainer, range.endOffset);
+    oldRange.deleteContents();
+  } */
 }
 
 // element类
-class ElementWrapper {
+class ElementWrapper extends Component {
   constructor(type) {
-    this.root = document.createElement(type);
-    this.state = null;
+    super(type);
+    this.type = type;
+    // this.root = document.createElement(type);
   }
-  appendChild(component) {
+  [RENDER_TO_DOM](range) {
+    /**
+     * 在此处，先将range清空，然后再往range中插入新的dom
+     */
+    // range.deleteContents();
+    this._range = range;
+
+    let root = document.createElement(this.type);
+
+    // 添加props
+    for (const name in this.props) {
+      const attr = this.props[name];
+      if (name.match(/^on([\s\S]+)$/)) {
+        root.addEventListener(RegExp.$1.replace(/^[\s\S]/, c => c.toLocaleLowerCase()), attr);
+      } else {
+        if (name === 'className') {
+          root.setAttribute('class', attr);
+        } else {
+          root.setAttribute(name, attr);
+        }
+      }
+    }
+
+    if (!this.vchildren)
+      this.vchildren = this.children.map(child => child.vdom);
+
+    // 添加child
+    for (const child of this.vchildren) {
+      let childRange = document.createRange();
+      childRange.setStart(root, root.childNodes.length);
+      childRange.setEnd(root, root.childNodes.length);
+      child[RENDER_TO_DOM](childRange);
+    }
+
+    replaceContent(range, root);
+    // range.insertNode(root);
+  }
+  get vdom() {
+    this.vchildren = this.children.map(child => child.vdom);
+    return this;
+  }
+  /* appendChild(component) {
     // this.root.appendChild(component.root);
     let range = document.createRange();
     range.setStart(this.root, this.root.childNodes.length);
@@ -100,28 +219,42 @@ class ElementWrapper {
         this.root.setAttribute(name, attr);
       }
     }
-  }
-  [RENDER_TO_DOM](range) {
-    /**
-     * 在此处，先将range清空，然后再往range中插入新的dom
-     */
-    range.deleteContents();
-    range.insertNode(this.root);
-  }
+  } */
 }
 
 // 文本类
-class TextWrapper {
-  constructor(type) {
-    this.root = document.createTextNode(type);
+class TextWrapper extends Component {
+  constructor(content) {
+    super(content);
+    this.type = '#text';
+    this.content = content;
   }
   [RENDER_TO_DOM](range) {
     /**
      * 在此处，先将range清空，然后再往range中插入新的dom
      */
-    range.deleteContents();
-    range.insertNode(this.root);
+    this._range = range;
+    /* range.deleteContents();
+    range.insertNode(this.root); */
+    let root = document.createTextNode(this.content);
+    replaceContent(range, root);
   }
+  get vdom() {
+    return this;
+    /* {
+      type: '#text',
+      content: this.content
+    } */
+  }
+}
+
+function replaceContent(range, node) {
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.deleteContents();
+
+  range.setStartBefore(node);
+  range.setEndAfter(node);
 }
 
 export function createElement(type, attrs, ...children) {
